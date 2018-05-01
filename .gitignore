@@ -1,3 +1,5 @@
 historical_data
 .ipynb_checkpoints
 merged_data.csv
+values_dicts
+clfs
