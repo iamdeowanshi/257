@@ -68,7 +68,7 @@ def predict_flight():
 
 @app.route("/api/airlines", methods=['GET'])
 def get_airlines_list():
-    data = {'airlines': INFO_DATA['delays']['Carrier'].to_dict('index')}
+    data = {'airlines': INFO_DATA['delays']['Carrier'].to_dict()}
     return jsonify(get_formatted_json(data))
 
 
