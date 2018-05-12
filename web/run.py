@@ -7,10 +7,11 @@ import requests
 import json
 
 WEATHER_API_KEY = ''
-FL_INFO_FOLDER = 'flight_info.data'
-DELAYS_INFO_FOLDER = 'delays.data'
-CLFS_INFO_FOLDER = 'clfs'
-COLS_FOLDER = 'values_dicts'
+FL_INFO_FOLDER = '../data/flight_info.data'
+DELAYS_INFO_FOLDER = '../data/delays.data'
+AVG_DELAYS_INFO_FOLDER = '../data/avg_delays.data'
+CLFS_INFO_FOLDER = '../data/clfs'
+COLS_FOLDER = '../data/values_dicts'
 INFO_DATA = {}
 
 app = Flask(__name__)
@@ -23,47 +24,82 @@ def before_request():
     if len(INFO_DATA) == 0:
         INFO_DATA = load_initial_data()
 
+
 @app.route('/')
-def hello_world():
-    return 'Hello World!'
+def main_route():
+    return 'Web service is up and running'
 
 
-@app.route("/predict_flight", methods=['GET'])
+@app.route('/api/last_update')
+def last_update():
+    data = {'last_update': '08-05-2018'}
+    return jsonify(get_formatted_json(data))
+
+
+@app.route("/api/flights/predict", methods=['GET'])
 def predict_flight():
     origin = request.args.get('origin', default='', type=str)
     dest = request.args.get('dest', default='', type=str)
     carrier = request.args.get('carrier', default='', type=str)
     fl_num = request.args.get('fl_num', default='', type=str)
     flight_date = datetime.strptime(request.args.get('flight_date'), "%Y-%m-%d").date()
-    features = get_features(INFO_DATA, WEATHER_API_KEY, origin, dest, carrier, fl_num, flight_date)
+    features = get_features(INFO_DATA, WEATHER_API_KEY, origin, dest, carrier, int(fl_num), flight_date)
 
-    return jsonify(INFO_DATA['clfs'][origin]['clf'].predict_proba(features).tolist())
+    result = INFO_DATA['clfs'][origin]['clf'].predict_proba(features).tolist()[0]
+    result = [{'cancelled_flight': result[0], 'delay': result[1], 'no_delay': result[2]}]
+
+    return jsonify(get_formatted_json(result))
+
+
+@app.route("/api/airlines", methods=['GET'])
+def get_airlines_list():
+    data = {'airlines': INFO_DATA['delays']['Carrier'].to_dict('index')}
+    return jsonify(get_formatted_json(data))
+
+
+@app.route("/api/airlines/flights", methods=['GET'])
+def get_airlines_flights():
+    data = {'flights': INFO_DATA['fl_info'][INFO_DATA['fl_info']['carrier'] == 'AA'][['origin', 'dest', 'fl_num']].to_dict('index')}
+    return jsonify(get_formatted_json(data))
+
+
+@app.route("/api/airlines/delay_rating", methods=['GET'])
+def get_airlines_delay_ratings():
+    data = {'airlines': INFO_DATA['delays'][['Carrier', 'Delay index']].to_dict('index')}
+    return jsonify(get_formatted_json(data))
 
 
 def load_initial_data():
     flight_info = load_file(FL_INFO_FOLDER)
     delays = load_file(DELAYS_INFO_FOLDER)
+    avg_delays = load_file(AVG_DELAYS_INFO_FOLDER)
     files_list = get_file_list(CLFS_INFO_FOLDER)
     clfs = {}
     for file in files_list:
         airport = file.replace(CLFS_INFO_FOLDER + '/', '').replace('.data', '')
         clfs[airport] = {'clf': load_file(file), 'cols': load_file(COLS_FOLDER + '/' + airport + '.data')}
-    return {'clfs': clfs, 'fl_info': flight_info, 'delays': delays}
+    return {'clfs': clfs, 'fl_info': flight_info, 'delays': delays, 'avg_delays': avg_delays}
 
 
 def get_features(data, weather_api_key, origin, dest, carrier, flight, date):
-    fl_info = data['fl_info'][(data['fl_info']['fl_num'] == int(flight)) & (data['fl_info']['carrier'] == carrier) & (data['fl_info']['origin'] == origin)]
+    fl_info = data['fl_info'][(data['fl_info']['fl_num'] == flight) & (data['fl_info']['carrier'] == carrier)
+                              & (data['fl_info']['origin'] == origin)]
     df = pd.DataFrame(columns=data['clfs'][origin]['cols'])
-    df = df.append({'average_wind_speed': get_wind_speed_for_city(get_series_value(fl_info['origin_city_name']), weather_api_key),
+    df = df.append({'average_wind_speed': get_wind_speed_for_city(get_series_value(fl_info['origin_city_name']),
+                                                                  weather_api_key),
                     'crs_dep_time': get_series_value(fl_info['crs_dep_time']),
-                    'crs_elapsed_time': get_series_value(fl_info['crs_elapsed_time']),'dest_' + dest: 1,
-                    'carrier_' + carrier: 1,
+                    'crs_elapsed_time': get_series_value(fl_info['crs_elapsed_time']),
+                    'day_of_month': date.day,
+                    'day_of_week': date.weekday(),
                     'month': date.month,
                     'quarter': date.month // 4,
-                    'day_of_month': date.day,
-                    'day_of_year': date.timetuple().tm_yday,
-                    'airline_delay_index': get_series_value(data['delays'][data['delays']['Carrier'] == carrier]['Delay index'])}
-                   , ignore_index=True)
+                    'previous_flight_delay': 0,
+                    'airline_delay_index': get_series_value(data['delays']
+                                                            [data['delays']['Carrier'] == carrier]['Delay index']),
+                    'airline_avg_delay': get_series_value(data['avg_delays']
+                                                          [data['avg_delays']['carrier'] == carrier]['carrier_delay']),
+                    'dest_' + dest: 1,
+                    'day_of_year': int(date.strftime("%j"))}, ignore_index=True)
     df = df.drop('status', axis=1)
     df = df.fillna(0)
     return df
@@ -93,5 +129,10 @@ def load_file(file_name):
         return pickle.load(f)
 
 
+def get_formatted_json(data):
+    formatted_data = {'status': 'ok', 'date': datetime.now(), 'result': data}
+    return formatted_data
+
+
 if __name__ == '__main__':
-    app.run(port=5001)
+    app.run()
