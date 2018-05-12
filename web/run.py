@@ -5,6 +5,7 @@ import glob
 import pickle
 import requests
 import json
+from werkzeug.contrib.cache import SimpleCache
 
 WEATHER_API_KEY = ''
 FL_INFO_FOLDER = '../data/flight_info.data'
@@ -13,6 +14,8 @@ AVG_DELAYS_INFO_FOLDER = '../data/avg_delays.data'
 CLFS_INFO_FOLDER = '../data/clfs'
 COLS_FOLDER = '../data/values_dicts'
 INFO_DATA = {}
+CACHE_TIMEOUT = 100
+cache = SimpleCache()
 
 app = Flask(__name__)
 
@@ -23,6 +26,16 @@ def before_request():
 
     if len(INFO_DATA) == 0:
         INFO_DATA = load_initial_data()
+
+    response = cache.get(request.path)
+    if response:
+        return response
+
+
+@app.after_request
+def cache_response(response):
+    cache.set(request.path, response, CACHE_TIMEOUT)
+    return response
 
 
 @app.route('/')
@@ -38,17 +51,19 @@ def last_update():
 
 @app.route("/api/flights/predict", methods=['GET'])
 def predict_flight():
-    origin = request.args.get('origin', default='', type=str)
-    dest = request.args.get('dest', default='', type=str)
-    carrier = request.args.get('carrier', default='', type=str)
-    fl_num = request.args.get('fl_num', default='', type=str)
-    flight_date = datetime.strptime(request.args.get('flight_date'), "%Y-%m-%d").date()
-    features = get_features(INFO_DATA, WEATHER_API_KEY, origin, dest, carrier, int(fl_num), flight_date)
+    try:
+        origin = request.args.get('origin', default='', type=str)
+        dest = request.args.get('dest', default='', type=str)
+        carrier = request.args.get('carrier', default='', type=str)
+        fl_num = request.args.get('fl_num', default='', type=str)
+        flight_date = datetime.strptime(request.args.get('flight_date'), "%Y-%m-%d").date()
+        features = get_features(INFO_DATA, WEATHER_API_KEY, origin, dest, carrier, int(fl_num), flight_date)
 
-    result = INFO_DATA['clfs'][origin]['clf'].predict_proba(features).tolist()[0]
-    result = [{'cancelled_flight': result[0], 'delay': result[1], 'no_delay': result[2]}]
-
-    return jsonify(get_formatted_json(result))
+        result = INFO_DATA['clfs'][origin]['clf'].predict_proba(features).tolist()[0]
+        result = [{'cancelled_flight': result[0], 'delay': result[1], 'no_delay': result[2]}]
+        return jsonify(get_formatted_json(result))
+    except:
+        return jsonify(get_formatted_json([], 'Could not check flight status. Please, check input params.'))
 
 
 @app.route("/api/airlines", methods=['GET'])
@@ -59,8 +74,14 @@ def get_airlines_list():
 
 @app.route("/api/airlines/flights", methods=['GET'])
 def get_airlines_flights():
-    data = {'flights': INFO_DATA['fl_info'][INFO_DATA['fl_info']['carrier'] == 'AA'][['origin', 'dest', 'fl_num']].to_dict('index')}
-    return jsonify(get_formatted_json(data))
+    try:
+        carrier = request.args.get('carrier', default='', type=str)
+        data = {'flights': INFO_DATA['fl_info'][INFO_DATA['fl_info']['carrier'] == carrier][['origin', 'dest', 'fl_num']].to_dict('index')}
+        if len(data) == 0:
+            raise ValueError('Incorrect carrier code')
+        return jsonify(get_formatted_json(data))
+    except:
+        return jsonify(get_formatted_json([], 'Could not find selected airline. Please, check your request.'))
 
 
 @app.route("/api/airlines/delay_rating", methods=['GET'])
@@ -129,8 +150,8 @@ def load_file(file_name):
         return pickle.load(f)
 
 
-def get_formatted_json(data):
-    formatted_data = {'status': 'ok', 'date': datetime.now(), 'result': data}
+def get_formatted_json(data, message='ok'):
+    formatted_data = {'message': message, 'date': datetime.now(), 'result': data}
     return formatted_data
 
 
